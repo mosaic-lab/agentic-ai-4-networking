@@ -31,7 +31,13 @@ if __name__ == "__main__":
     g.save_to_text_file("results/network.txt")
 
     # Create traffic model
-    base_demands = create_random_traffic_pattern(g, seed=random_seed, base_demand=base_demand, start_t_max=num_steps)
+    base_demands = create_random_traffic_pattern(
+        g,
+        seed=random_seed,
+        base_demand=base_demand,
+        start_t_max=num_steps,
+        **traffic_pattern_args,
+    )
     traffic = TrafficModel(base_demands, **traffic_args)
 
     # Setup controller + agent
@@ -41,6 +47,16 @@ if __name__ == "__main__":
     # Collect metrics
     all_history = {}
     all_history_per_demand = {}
+    request_outcome_keys = [
+        ("Accepted", "accepted_request_count", "#4c78a8"),
+        ("Rejected: delay/SLA", "delay_dropped_request_count", "#f58518"),
+        ("Rejected: no valid path", "no_valid_path_request_count", "#e45756"),
+        ("Rejected: other", "other_dropped_request_count", "#72b7b2"),
+    ]
+    request_outcome_totals = {
+        algo: {key: 0 for _, key, _ in request_outcome_keys}
+        for algo in algorithms
+    }
 
     with Simulator(g, traffic, ctrl, llm_agent, verbosity=verbosity_level) as simulator:
         for algo in algorithms:
@@ -58,6 +74,8 @@ if __name__ == "__main__":
                 _, metrics = simulator.step(algo)
                 for k in metric_names:
                     history[k].append(metrics.get(k, 0.0))
+                for _, key, _ in request_outcome_keys:
+                    request_outcome_totals[algo][key] += metrics.get(key, 0)
                 for item in metrics["accepted_demands"]:
                     history_per_demand.at[t, (item["src"], item["dst"])] = item["demand"]
 
@@ -83,7 +101,32 @@ if __name__ == "__main__":
     fig.savefig("results/results.png", dpi=150)
     plt.close(fig)
 
+    # Plot aggregate request outcomes as one stacked bar per algorithm.
+    fig_bar, ax_bar = plt.subplots(figsize=(max(8, 1.4 * len(algorithms) + 3), 5))
+    x = np.arange(len(algorithms))
+    bottom = np.zeros(len(algorithms))
+
+    for label, key, color in request_outcome_keys:
+        values = np.array([request_outcome_totals[algo][key] for algo in algorithms])
+        ax_bar.bar(x, values, bottom=bottom, label=label, color=color)
+        bottom += values
+
+    ax_bar.set_title("Request outcomes by algorithm")
+    ax_bar.set_xlabel("algorithm")
+    ax_bar.set_ylabel("number of active requests")
+    ax_bar.set_xticks(x)
+    ax_bar.set_xticklabels(algorithms, rotation=20, ha="right")
+    ax_bar.grid(axis="y", alpha=0.3)
+    ax_bar.legend()
+    fig_bar.tight_layout()
+    fig_bar.savefig("results/request_outcomes_stacked_bar.png", dpi=150)
+    plt.close(fig_bar)
+
+    request_outcomes = pd.DataFrame.from_dict(request_outcome_totals, orient="index")
+    request_outcomes.to_csv("results/request_outcomes_by_algorithm.csv")
+
     for algo in algorithms:
         all_history_per_demand[algo].to_csv(f"results/all_history_{algo}.csv")
 
     print("Simulation completed. Metric results were saved to results.png.")
+    print("Request outcome bar plot was saved to request_outcomes_stacked_bar.png.")
