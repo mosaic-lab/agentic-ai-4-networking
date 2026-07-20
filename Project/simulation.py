@@ -73,6 +73,7 @@ class TrafficSnapshot:
     version: int
     step: int
     demands_mbps: Dict[FlowId, float]
+    max_latency_ms: Dict[FlowId, float | None] = field(default_factory=dict)
 
 
 @dataclass(slots=True)
@@ -349,6 +350,7 @@ class TrafficModel:
 class ControllerAPI:
     def __init__(self, graph: NetworkGraph):
         self.g = graph
+        self.traffic_model: TrafficModel | None = None
         self.flow_table: Dict[FlowId, FlowEntry] = {}
         self.version = 0
         self.step_count = 0
@@ -392,6 +394,7 @@ class ControllerAPI:
             demands: Dict[Tuple[Node, Node], float] | Dict[FlowId, float] | TrafficSnapshot | None = None
     ) -> TrafficSnapshot:
         demands_mbps: Dict[FlowId, float] = {}
+        max_latency_ms: Dict[FlowId, float | None] = {}
 
         if demands is None:
             for fid, entry in self.flow_table.items():
@@ -400,6 +403,7 @@ class ControllerAPI:
 
         elif isinstance(demands, TrafficSnapshot):
             demands_mbps = dict(demands.demands_mbps)
+            max_latency_ms = dict(demands.max_latency_ms)
 
         else:
             for key, demand in demands.items():
@@ -411,10 +415,18 @@ class ControllerAPI:
 
                 demands_mbps[fid] = float(demand)
 
+        if self.traffic_model is not None:
+            max_latency_ms.update({
+                fid: self.traffic_model.get_max_latency_ms(fid.src, fid.dst)
+                for fid in demands_mbps
+                if fid not in max_latency_ms
+            })
+
         return TrafficSnapshot(
             version=self.version,
             step=self.step_count,
-            demands_mbps=demands_mbps
+            demands_mbps=demands_mbps,
+            max_latency_ms=max_latency_ms,
         )
 
     def get_flow_table_snapshot(self) -> FlowTableSnapshot:
@@ -527,6 +539,7 @@ class Simulator:
         self.g = graph
         self.traffic = traffic
         self.ctrl = controller
+        self.ctrl.traffic_model = traffic
         self.agentic_manager = routing_agent
         self.verbosity = verbosity
 
